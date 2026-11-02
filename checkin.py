@@ -99,6 +99,8 @@ class Config:
 
     ENV_PUSH_KEY = "PUSHDEER_SENDKEY"
     ENV_SERVERCHAN_KEY = "SERVERCHAN_SENDKEY"
+    ENV_TG_BOT_TOKEN = "TELEGRAM_BOT_TOKEN"
+    ENV_TG_CHAT_ID = "TELEGRAM_CHAT_ID"
     ENV_COOKIES = "GLADOS_COOKIES"
     ENV_EXCHANGE_PLAN = "GLADOS_EXCHANGE_PLAN"
     ENV_VERBOSE = "GLADOS_VERBOSE"
@@ -122,6 +124,8 @@ class Config:
     def __init__(self):
         self.push_key: str = ""
         self.serverchan_key: str = ""
+        self.tg_bot_token: str = ""
+        self.tg_chat_id: str = ""
         self.cookies_list: List[str] = []
         self.exchange_plan: str = self.DEFAULT_EXCHANGE_PLAN
         self.verbose: bool = self.DEFAULT_VERBOSE
@@ -131,6 +135,8 @@ class Config:
         """加载配置"""
         push_key_env: Optional[str] = os.environ.get(self.ENV_PUSH_KEY)
         serverchan_key_env: Optional[str] = os.environ.get(self.ENV_SERVERCHAN_KEY)
+        tg_bot_token_env: Optional[str] = os.environ.get(self.ENV_TG_BOT_TOKEN)
+        tg_chat_id_env: Optional[str] = os.environ.get(self.ENV_TG_CHAT_ID)
         raw_cookies_env: Optional[str] = os.environ.get(self.ENV_COOKIES)
         exchange_plan_env: Optional[str] = os.environ.get(self.ENV_EXCHANGE_PLAN)
         verbose_env: Optional[str] = os.environ.get(self.ENV_VERBOSE)
@@ -146,6 +152,14 @@ class Config:
             self.serverchan_key = ""
         else:
             self.serverchan_key = serverchan_key_env
+
+        if not tg_bot_token_env or not tg_chat_id_env:
+            logger.warning(f"{LogEmoji.WARNING} Telegram 推送环境变量未完整设置。")
+            self.tg_bot_token = ""
+            self.tg_chat_id = ""
+        else:
+            self.tg_bot_token = tg_bot_token_env
+            self.tg_chat_id = tg_chat_id_env
 
         if not raw_cookies_env:
             logger.warning(f"{LogEmoji.WARNING} 环境变量 '{self.ENV_COOKIES}' 未设置。")
@@ -168,6 +182,7 @@ class Config:
 
         logger.info(f"{LogEmoji.INFO} 共加载了 {len(self.cookies_list)} 个 Cookie 用于签到。")
         logger.info(f"{LogEmoji.INFO} 当前 {self.ENV_PUSH_KEY} {'已设置' if push_key_env else '未设置'}，{self.ENV_SERVERCHAN_KEY} {'已设置' if serverchan_key_env else '未设置'}。")
+        logger.info(f"{LogEmoji.INFO} 当前 {self.ENV_TG_BOT_TOKEN} {'已设置' if tg_bot_token_env else '未设置'}。")
         logger.info(f"{LogEmoji.INFO} 当前 {self.ENV_EXCHANGE_PLAN}: {self.exchange_plan}。")
 
         if verbose_env is not None:
@@ -554,6 +569,32 @@ class ServerChanBackend(PushBackend):
             return False
 
 
+class TelegramBackend(PushBackend):
+    """Telegram推送后端"""
+    name = "Telegram"
+
+    def __init__(self, bot_token: str, chat_id: str):
+        self.bot_token = bot_token
+        self.chat_id = chat_id
+
+    def send(self, title: str, payload: dict) -> bool:
+        try:
+            text = f"{title}\n\n{self._render(payload)}"
+            api_url = f"https://api.telegram.org/bot{self.bot_token}/sendMessage"
+            resp = requests.post(api_url, data={
+                "chat_id": self.chat_id,
+                "text": text
+            }, timeout=20)
+            j = resp.json()
+            if j.get("ok"):
+                return True
+            logger.error(f"{LogEmoji.ERROR} [{self.name}] TG接口返回: {j}")
+            return False
+        except Exception as e:
+            logger.error(f"{LogEmoji.ERROR} [{self.name}] 推送失败: {e}")
+            return False
+
+
 class PushService:
     """推送服务：聚合多个后端，向全部已配置后端发送（都发）"""
 
@@ -564,6 +605,8 @@ class PushService:
                 self.backends.append(PushDeerBackend(config.push_key))
             if getattr(config, "serverchan_key", ""):
                 self.backends.append(ServerChanBackend(config.serverchan_key))
+            if getattr(config, "tg_bot_token", "") and getattr(config, "tg_chat_id", ""):
+                self.backends.append(TelegramBackend(config.tg_bot_token, config.tg_chat_id))
 
     def send(self, title: str, payload: dict) -> bool:
         """向所有已配置后端发送推送，只要有一个成功即视为成功"""
